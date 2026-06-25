@@ -91,6 +91,11 @@ module tb_gcm();
   parameter ADDR_TAG2        = 8'h42;
   parameter ADDR_TAG3        = 8'h43;
 
+  parameter ADDR_RESULT0     = 8'h50;
+  parameter ADDR_RESULT1     = 8'h51;
+  parameter ADDR_RESULT2     = 8'h52;
+  parameter ADDR_RESULT3     = 8'h53;
+
 
   //----------------------------------------------------------------
   // Register and Wire declarations.
@@ -456,9 +461,11 @@ module tb_gcm();
       end else
         $display("TC%02d PASSED: nonce = %h", tc_ctr, got_nonce);
 
-      // TC_RM02: tag write/readback
+      // TC_RM02: tag input register write.
+      // Bus reads at ADDR_TAG return tag_out_reg (computed output), so
+      // verify the write landed in tag_reg via hierarchical reference.
       tc_ctr = tc_ctr + 1;
-      $display("TC%02d: tag register write/readback", tc_ctr);
+      $display("TC%02d: tag input register write (verified via dut.tag_reg)", tc_ctr);
 
       exp_tag = 128'h11223344_55667788_99aabbcc_ddeeff00;
 
@@ -467,18 +474,16 @@ module tb_gcm();
       write_word(ADDR_TAG2, exp_tag[ 63 : 32]);
       write_word(ADDR_TAG3, exp_tag[ 31 :  0]);
 
-      read_word(ADDR_TAG0); got_tag[127 : 96] = read_data;
-      read_word(ADDR_TAG1); got_tag[ 95 : 64] = read_data;
-      read_word(ADDR_TAG2); got_tag[ 63 : 32] = read_data;
-      read_word(ADDR_TAG3); got_tag[ 31 :  0] = read_data;
+      got_tag = {dut.tag_reg[0], dut.tag_reg[1],
+                 dut.tag_reg[2], dut.tag_reg[3]};
 
       if (got_tag !== exp_tag) begin
-        $display("TC%02d FAILED: tag readback mismatch", tc_ctr);
+        $display("TC%02d FAILED: tag_reg mismatch", tc_ctr);
         $display("  expected: %h", exp_tag);
         $display("  got:      %h", got_tag);
         error_ctr = error_ctr + 1;
       end else
-        $display("TC%02d PASSED: tag = %h", tc_ctr, got_tag);
+        $display("TC%02d PASSED: tag_reg = %h", tc_ctr, got_tag);
 
       // TC_RM03: core_nonce wiring
       // After writing to the nonce registers, check that the wire
@@ -509,6 +514,65 @@ module tb_gcm();
       $display("*** Register map tests completed.");
     end
   endtask // reg_map_tests
+
+
+  //----------------------------------------------------------------
+  // result_readback_tests()
+  //
+  // Verify that ADDR_RESULT0-3 and ADDR_TAG0-3 exist in the register
+  // map and return defined (non-X) values.  Ciphertext/tag correctness
+  // cannot be checked until gcm_core is functional; those checks belong
+  // in the NIST test cases once the core is complete (issue #14).
+  //----------------------------------------------------------------
+  task result_readback_tests;
+    reg [127 : 0] result;
+    reg [127 : 0] tag_out;
+    begin
+      $display("*** Result readback tests started.");
+
+      // TC_RR01: result_reg exists and resets to zero.
+      // Referencing dut.result_reg directly causes a compile error if the
+      // register array has not been declared in gcm.v — this is the TDD
+      // red step.  Bus readback at ADDR_RESULT0-3 must also return 0.
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: result register reset value and bus readback", tc_ctr);
+
+      result = {dut.result_reg[0], dut.result_reg[1],
+                dut.result_reg[2], dut.result_reg[3]};
+
+      read_word(ADDR_RESULT0); result[127 : 96] = read_data;
+      read_word(ADDR_RESULT1); result[ 95 : 64] = read_data;
+      read_word(ADDR_RESULT2); result[ 63 : 32] = read_data;
+      read_word(ADDR_RESULT3); result[ 31 :  0] = read_data;
+
+      if (result !== 128'h0) begin
+        $display("TC%02d FAILED: expected 0 after reset, got %h", tc_ctr, result);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: result = %h (core stub, expect 0)", tc_ctr, result);
+
+      // TC_RR02: tag_out_reg exists and resets to zero.
+      // TAG reads must return the latched output register, not tag_reg.
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: tag output register reset value and bus readback", tc_ctr);
+
+      tag_out = {dut.tag_out_reg[0], dut.tag_out_reg[1],
+                 dut.tag_out_reg[2], dut.tag_out_reg[3]};
+
+      read_word(ADDR_TAG0); tag_out[127 : 96] = read_data;
+      read_word(ADDR_TAG1); tag_out[ 95 : 64] = read_data;
+      read_word(ADDR_TAG2); tag_out[ 63 : 32] = read_data;
+      read_word(ADDR_TAG3); tag_out[ 31 :  0] = read_data;
+
+      if (tag_out !== 128'h0) begin
+        $display("TC%02d FAILED: expected 0 after reset, got %h", tc_ctr, tag_out);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: tag_out = %h (core stub, expect 0)", tc_ctr, tag_out);
+
+      $display("*** Result readback tests completed.");
+    end
+  endtask // result_readback_tests
 
 
   //----------------------------------------------------------------
@@ -614,6 +678,7 @@ module tb_gcm();
 
       check_name_version();
       reg_map_tests();
+      result_readback_tests();
       gcm_tests();
 
       display_test_result();

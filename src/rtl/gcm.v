@@ -87,6 +87,10 @@ module gcm(
   localparam ADDR_TAG3           = 8'h43;
   localparam TAG_WORDS           = 4;
 
+  localparam ADDR_RESULT0        = 8'h50;
+  localparam ADDR_RESULT3        = 8'h53;
+  localparam RESULT_WORDS        = 4;
+
   localparam WSIZE               = 32;
 
   localparam CORE_NAME0          = 32'h67636d2d; // "gcm-"
@@ -137,6 +141,10 @@ module gcm(
   reg [31 : 0] tag_reg [0 : 3];
   reg          tag_we;
   reg [1 : 0]  tag_address;
+
+  reg [31 : 0] result_reg [0 : 3];
+
+  reg [31 : 0] tag_out_reg [0 : 3];
 
 
   //----------------------------------------------------------------
@@ -218,9 +226,11 @@ module gcm(
         begin
           for (i = 0 ; i < 4 ; i = i + 1)
             begin
-              block_reg[i] <= 32'h0;
-              nonce_reg[i] <= 32'h0;
-              tag_reg[i]   <= 32'h0;
+              block_reg[i]   <= 32'h0;
+              nonce_reg[i]   <= 32'h0;
+              tag_reg[i]     <= 32'h0;
+              result_reg[i]  <= 32'h0;
+              tag_out_reg[i] <= 32'h0;
             end
 
           for (i = 0 ; i < 8 ; i = i + 1)
@@ -270,6 +280,18 @@ module gcm(
 
           if (tag_we)
             tag_reg[tag_address] <= write_data;
+
+          if (core_valid)
+            begin
+              result_reg[0]  <= core_block_out[127 : 96];
+              result_reg[1]  <= core_block_out[ 95 : 64];
+              result_reg[2]  <= core_block_out[ 63 : 32];
+              result_reg[3]  <= core_block_out[ 31 :  0];
+              tag_out_reg[0] <= core_tag_out[127 : 96];
+              tag_out_reg[1] <= core_tag_out[ 95 : 64];
+              tag_out_reg[2] <= core_tag_out[ 63 : 32];
+              tag_out_reg[3] <= core_tag_out[ 31 :  0];
+            end
         end
     end // reg_update
 
@@ -359,7 +381,10 @@ module gcm(
                 tmp_read_data = nonce_reg[nonce_address];
 
               if ((address >= ADDR_TAG0) && (address <= ADDR_TAG3))
-                tmp_read_data = tag_reg[tag_address];
+                tmp_read_data = tag_out_reg[tag_address];
+
+              if ((address >= ADDR_RESULT0) && (address <= ADDR_RESULT3))
+                tmp_read_data = result_reg[address[1 : 0]];
             end
         end
     end // addr_decoder
