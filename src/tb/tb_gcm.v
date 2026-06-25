@@ -576,6 +576,53 @@ module tb_gcm();
 
 
   //----------------------------------------------------------------
+  // gcm_core_init_tests()
+  //
+  // Verify that CTRL_INIT in gcm_core properly runs AES key expansion
+  // and computes H = AES(K, 0^128).
+  //
+  // TC_CI01: ready asserts after init (currently times out — red).
+  // TC_CI02: h_reg holds the correct H value for K=0 (AES-128).
+  //          Referencing dut.core.h_reg causes a compile error until
+  //          the register is declared — this is the TDD red step.
+  //----------------------------------------------------------------
+  task gcm_core_init_tests;
+    begin
+      $display("*** GCM core init tests started.");
+
+      reset_dut();
+
+      // TC_CI01: AES-128 init completes — ready must assert without timeout
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: AES-128 init completes (K=0, nonce=0)", tc_ctr);
+
+      gcm_init(256'h0, 1'b0, 128'h0);
+
+      read_word(ADDR_STATUS);
+      if (!read_data[STATUS_READY_BIT]) begin
+        $display("TC%02d FAILED: ready did not assert after init", tc_ctr);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: ready asserted after init", tc_ctr);
+
+      // TC_CI02: H = AES_128(K=0, 0^128) = 66e94bd4ef8a2c3b884cfa59ca342b2e
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: H = AES(K=0, 0^128) correct value", tc_ctr);
+
+      if (dut.core.h_reg !== 128'h66e94bd4ef8a2c3b884cfa59ca342b2e) begin
+        $display("TC%02d FAILED:", tc_ctr);
+        $display("  expected: 66e94bd4ef8a2c3b884cfa59ca342b2e");
+        $display("  got:      %h", dut.core.h_reg);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: h_reg = %h", tc_ctr, dut.core.h_reg);
+
+      $display("*** GCM core init tests completed.");
+    end
+  endtask // gcm_core_init_tests
+
+
+  //----------------------------------------------------------------
   // gcm_tests()
   //
   // Test vectors from NIST SP 800-38D, Appendix B.
@@ -679,6 +726,7 @@ module tb_gcm();
       check_name_version();
       reg_map_tests();
       result_readback_tests();
+      gcm_core_init_tests();
       gcm_tests();
 
       display_test_result();
