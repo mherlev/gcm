@@ -50,6 +50,8 @@ module tb_gcm();
   parameter CLK_HALF_PERIOD = 2;
   parameter CLK_PERIOD = 2 * CLK_HALF_PERIOD;
 
+  parameter TIMEOUT_CYCLES = 10000;
+
   // The address map.
   parameter ADDR_NAME0       = 8'h00;
   parameter ADDR_NAME1       = 8'h01;
@@ -62,6 +64,27 @@ module tb_gcm();
   parameter ADDR_STATUS      = 8'h09;
   parameter STATUS_READY_BIT = 0;
   parameter STATUS_VALID_BIT = 1;
+
+  parameter ADDR_CONFIG      = 8'h0a;
+
+  parameter ADDR_KEY0        = 8'h10;
+  parameter ADDR_KEY1        = 8'h11;
+  parameter ADDR_KEY2        = 8'h12;
+  parameter ADDR_KEY3        = 8'h13;
+  parameter ADDR_KEY4        = 8'h14;
+  parameter ADDR_KEY5        = 8'h15;
+  parameter ADDR_KEY6        = 8'h16;
+  parameter ADDR_KEY7        = 8'h17;
+
+  parameter ADDR_BLOCK0      = 8'h20;
+  parameter ADDR_BLOCK1      = 8'h21;
+  parameter ADDR_BLOCK2      = 8'h22;
+  parameter ADDR_BLOCK3      = 8'h23;
+
+  parameter ADDR_NONCE0      = 8'h30;
+  parameter ADDR_NONCE1      = 8'h31;
+  parameter ADDR_NONCE2      = 8'h32;
+  parameter ADDR_NONCE3      = 8'h33;
 
 
   //----------------------------------------------------------------
@@ -205,23 +228,107 @@ module tb_gcm();
   //----------------------------------------------------------------
   // wait_ready()
   //
-  // Wait for the ready flag in the dut to be set.
-  // (Actually we wait for either ready or valid to be set.)
-  //
-  // Note: It is the callers responsibility to call the function
-  // when the dut is actively processing and will in fact at some
-  // point set the flag.
+  // Wait for the ready or valid flag in the dut to be set,
+  // with a cycle timeout to prevent infinite loops when the
+  // implementation is incomplete.
   //----------------------------------------------------------------
   task wait_ready;
+    reg [31 : 0] wait_ctr;
     begin
       read_data = 0;
+      wait_ctr  = 0;
 
-      while (read_data == 0)
+      while (read_data == 0 && wait_ctr < TIMEOUT_CYCLES)
         begin
           read_word(ADDR_STATUS);
+          wait_ctr = wait_ctr + 1;
         end
+
+      if (wait_ctr == TIMEOUT_CYCLES)
+        $display("TIMEOUT: DUT did not assert ready/valid within %0d cycles.", TIMEOUT_CYCLES);
     end
   endtask // wait_ready
+
+
+  //----------------------------------------------------------------
+  // write_key()
+  //
+  // Write a 256-bit key to the key registers.
+  // For AES-128 only the upper 128 bits (key[255:128]) are used.
+  //----------------------------------------------------------------
+  task write_key(input [255 : 0] key);
+    begin
+      write_word(ADDR_KEY0, key[255 : 224]);
+      write_word(ADDR_KEY1, key[223 : 192]);
+      write_word(ADDR_KEY2, key[191 : 160]);
+      write_word(ADDR_KEY3, key[159 : 128]);
+      write_word(ADDR_KEY4, key[127 :  96]);
+      write_word(ADDR_KEY5, key[ 95 :  64]);
+      write_word(ADDR_KEY6, key[ 63 :  32]);
+      write_word(ADDR_KEY7, key[ 31 :   0]);
+    end
+  endtask // write_key
+
+
+  //----------------------------------------------------------------
+  // write_nonce()
+  //
+  // Write a 128-bit nonce to the nonce registers.
+  // NIST 96-bit IVs should be padded to 128-bit as: IV || 0x00000001
+  //----------------------------------------------------------------
+  task write_nonce(input [127 : 0] nonce);
+    begin
+      write_word(ADDR_NONCE0, nonce[127 : 96]);
+      write_word(ADDR_NONCE1, nonce[ 95 : 64]);
+      write_word(ADDR_NONCE2, nonce[ 63 : 32]);
+      write_word(ADDR_NONCE3, nonce[ 31 :  0]);
+    end
+  endtask // write_nonce
+
+
+  //----------------------------------------------------------------
+  // write_block()
+  //
+  // Write a 128-bit plaintext block to the block registers.
+  //----------------------------------------------------------------
+  task write_block(input [127 : 0] block);
+    begin
+      write_word(ADDR_BLOCK0, block[127 : 96]);
+      write_word(ADDR_BLOCK1, block[ 95 : 64]);
+      write_word(ADDR_BLOCK2, block[ 63 : 32]);
+      write_word(ADDR_BLOCK3, block[ 31 :  0]);
+    end
+  endtask // write_block
+
+
+  //----------------------------------------------------------------
+  // gcm_init()
+  //
+  // Load key and nonce, trigger key expansion, wait for ready.
+  //----------------------------------------------------------------
+  task gcm_init(input [255 : 0] key, input keylen, input [127 : 0] nonce);
+    begin
+      write_key(key);
+      write_nonce(nonce);
+      write_word(ADDR_CONFIG, {6'h0, 2'h3, 5'h0, keylen, 1'b1}); // taglen=128, keylen, encdec=encrypt
+      write_word(ADDR_CTRL, 32'h1);
+      wait_ready();
+    end
+  endtask // gcm_init
+
+
+  //----------------------------------------------------------------
+  // gcm_encrypt_block()
+  //
+  // Write a plaintext block, trigger encryption, wait for valid.
+  //----------------------------------------------------------------
+  task gcm_encrypt_block(input [127 : 0] plaintext);
+    begin
+      write_block(plaintext);
+      write_word(ADDR_CTRL, 32'h2);
+      wait_ready();
+    end
+  endtask // gcm_encrypt_block
 
 
   //----------------------------------------------------------------
@@ -303,11 +410,88 @@ module tb_gcm();
 
   //----------------------------------------------------------------
   // gcm_tests()
+  //
+  // Test vectors from NIST SP 800-38D, Appendix B.
+  // https://csrc.nist.gov/publications/detail/sp/800-38d/final
+  //
+  // Note: ciphertext readback is not yet implemented in the register
+  // interface (gcm.v has no result registers). Tests currently verify
+  // that init and encrypt sequences complete without timeout. Output
+  // correctness checks should be added once result registers exist.
   //----------------------------------------------------------------
   task gcm_tests;
     begin : gcm_tests
+      // NIST SP 800-38D Test Case 2 — AES-128-GCM, single block
+      // K   : 00000000000000000000000000000000
+      // IV  : 000000000000000000000000 (96-bit, J0 = IV || 0x00000001)
+      // P   : 00000000000000000000000000000000
+      // A   : (empty)
+      // C   : 0388dace60b6a392f328c2b971b2fe78
+      // Tag : ab6e47d42cec13bdf53a67b21257bddf
+      reg [255 : 0] tc2_key;
+      reg [127 : 0] tc2_nonce;
+      reg [127 : 0] tc2_plaintext;
+
+      // NIST SP 800-38D Test Case 14 — AES-256-GCM, single block
+      // K   : 0000000000000000000000000000000000000000000000000000000000000000
+      // IV  : 000000000000000000000000 (96-bit)
+      // P   : 00000000000000000000000000000000
+      // A   : (empty)
+      // C   : cea7403d4d606b6e074ec5d3baf39d18
+      // Tag : d0d1c8a799996bf0265b98b5d48ab919
+      reg [255 : 0] tc14_key;
+      reg [127 : 0] tc14_nonce;
+      reg [127 : 0] tc14_plaintext;
 
       $display("*** Testcases for gcm functionality started.");
+
+      // -- TC2: AES-128-GCM --
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: NIST SP 800-38D Test Case 2 (AES-128-GCM, single block)", tc_ctr);
+
+      tc2_key       = 256'h0;
+      tc2_nonce     = 128'h00000000000000000000000000000001; // IV=0 padded with counter=1
+      tc2_plaintext = 128'h0;
+
+      gcm_init(tc2_key, 1'b0, tc2_nonce);
+      gcm_encrypt_block(tc2_plaintext);
+
+      read_word(ADDR_STATUS);
+      if (read_data[STATUS_VALID_BIT] || read_data[STATUS_READY_BIT])
+        $display("TC%02d PASSED: init and encrypt completed.", tc_ctr);
+      else
+        begin
+          $display("TC%02d FAILED: DUT not ready/valid after encrypt.", tc_ctr);
+          error_ctr = error_ctr + 1;
+        end
+
+      // Expected ciphertext (not yet verifiable via register interface):
+      // C   = 0388dace60b6a392f328c2b971b2fe78
+      // Tag = ab6e47d42cec13bdf53a67b21257bddf
+
+      // -- TC14: AES-256-GCM --
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: NIST SP 800-38D Test Case 14 (AES-256-GCM, single block)", tc_ctr);
+
+      tc14_key       = 256'h0;
+      tc14_nonce     = 128'h00000000000000000000000000000001; // IV=0 padded with counter=1
+      tc14_plaintext = 128'h0;
+
+      gcm_init(tc14_key, 1'b1, tc14_nonce);
+      gcm_encrypt_block(tc14_plaintext);
+
+      read_word(ADDR_STATUS);
+      if (read_data[STATUS_VALID_BIT] || read_data[STATUS_READY_BIT])
+        $display("TC%02d PASSED: init and encrypt completed.", tc_ctr);
+      else
+        begin
+          $display("TC%02d FAILED: DUT not ready/valid after encrypt.", tc_ctr);
+          error_ctr = error_ctr + 1;
+        end
+
+      // Expected ciphertext (not yet verifiable via register interface):
+      // C   = cea7403d4d606b6e074ec5d3baf39d18
+      // Tag = d0d1c8a799996bf0265b98b5d48ab919
 
       $display("*** Testcases for gcm functionality completed.");
     end
