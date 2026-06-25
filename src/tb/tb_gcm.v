@@ -461,9 +461,11 @@ module tb_gcm();
       end else
         $display("TC%02d PASSED: nonce = %h", tc_ctr, got_nonce);
 
-      // TC_RM02: tag write/readback
+      // TC_RM02: tag input register write.
+      // Bus reads at ADDR_TAG return tag_out_reg (computed output), so
+      // verify the write landed in tag_reg via hierarchical reference.
       tc_ctr = tc_ctr + 1;
-      $display("TC%02d: tag register write/readback", tc_ctr);
+      $display("TC%02d: tag input register write (verified via dut.tag_reg)", tc_ctr);
 
       exp_tag = 128'h11223344_55667788_99aabbcc_ddeeff00;
 
@@ -472,18 +474,16 @@ module tb_gcm();
       write_word(ADDR_TAG2, exp_tag[ 63 : 32]);
       write_word(ADDR_TAG3, exp_tag[ 31 :  0]);
 
-      read_word(ADDR_TAG0); got_tag[127 : 96] = read_data;
-      read_word(ADDR_TAG1); got_tag[ 95 : 64] = read_data;
-      read_word(ADDR_TAG2); got_tag[ 63 : 32] = read_data;
-      read_word(ADDR_TAG3); got_tag[ 31 :  0] = read_data;
+      got_tag = {dut.tag_reg[0], dut.tag_reg[1],
+                 dut.tag_reg[2], dut.tag_reg[3]};
 
       if (got_tag !== exp_tag) begin
-        $display("TC%02d FAILED: tag readback mismatch", tc_ctr);
+        $display("TC%02d FAILED: tag_reg mismatch", tc_ctr);
         $display("  expected: %h", exp_tag);
         $display("  got:      %h", got_tag);
         error_ctr = error_ctr + 1;
       end else
-        $display("TC%02d PASSED: tag = %h", tc_ctr, got_tag);
+        $display("TC%02d PASSED: tag_reg = %h", tc_ctr, got_tag);
 
       // TC_RM03: core_nonce wiring
       // After writing to the nonce registers, check that the wire
@@ -552,8 +552,7 @@ module tb_gcm();
         $display("TC%02d PASSED: result = %h (core stub, expect 0)", tc_ctr, result);
 
       // TC_RR02: tag_out_reg exists and resets to zero.
-      // TAG reads must return the latched output register, not the input
-      // tag_reg (which still holds the value written in TC02).
+      // TAG reads must return the latched output register, not tag_reg.
       tc_ctr = tc_ctr + 1;
       $display("TC%02d: tag output register reset value and bus readback", tc_ctr);
 
