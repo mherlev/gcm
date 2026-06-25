@@ -1,154 +1,102 @@
 //======================================================================
 //
-// tb_gcm.v
-// --------
-// Testbench for the GCM core top level wrapper.
+// tb_gcm_ghash.v
+// --------------
+// Testbench for the gcm_ghash GF(2^128) GHASH module.
 //
+// Directly instantiates gcm_ghash and drives it with algebraically
+// verified test vectors.  Expected outputs are derived from GF(2^128)
+// polynomial arithmetic properties rather than a reference model, so
+// they can be checked without running external software.
 //
-// Author: Joachim Strombergson
-// Copyright (c) 2016, Secworks Sweden AB
-// All rights reserved.
+// GCM bit-ordering convention used throughout:
+//   element "1" (multiplicative identity) = 128'h80000000_00000000_00000000_00000000
+//   element "x"                           = 128'h40000000_00000000_00000000_00000000
 //
-// Redistribution and use in source and binary forms, with or
-// without modification, are permitted provided that the following
-// conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright
-//    notice, this list of conditions and the following disclaimer.
-//
-// 2. Redistributions in binary form must reproduce the above copyright
-//    notice, this list of conditions and the following disclaimer in
-//    the documentation and/or other materials provided with the
-//    distribution.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
-// FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
-// COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-// BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
-// STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
-// ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
+// Author: Mathias Herlev
 //======================================================================
-
 
 //------------------------------------------------------------------
 // Test module.
 //------------------------------------------------------------------
-module tb_gcm();
+module tb_gcm_ghash();
 
   //----------------------------------------------------------------
   // Internal constant and parameter definitions.
   //----------------------------------------------------------------
-  parameter DEBUG = 0;
-
   parameter CLK_HALF_PERIOD = 2;
-  parameter CLK_PERIOD = 2 * CLK_HALF_PERIOD;
-
-  // The address map.
-  parameter ADDR_NAME0       = 8'h00;
-  parameter ADDR_NAME1       = 8'h01;
-  parameter ADDR_VERSION     = 8'h02;
-
-  parameter ADDR_CTRL        = 8'h08;
-  parameter CTRL_INIT_VALUE  = 8'h01;
-  parameter CTRL_NEXT_VALUE  = 8'h02;
-
-  parameter ADDR_STATUS      = 8'h09;
-  parameter STATUS_READY_BIT = 0;
-  parameter STATUS_VALID_BIT = 1;
-
+  parameter CLK_PERIOD      = 2 * CLK_HALF_PERIOD;
+  parameter TIMEOUT_CYCLES  = 200;
 
   //----------------------------------------------------------------
   // Register and Wire declarations.
   //----------------------------------------------------------------
-  reg [31 : 0]  cycle_ctr;
-  reg [31 : 0]  error_ctr;
-  reg [31 : 0]  tc_ctr;
+  reg [31 : 0] cycle_ctr;
+  reg [31 : 0] error_ctr;
+  reg [31 : 0] tc_ctr;
 
   reg           tb_clk;
   reg           tb_reset_n;
-  reg           tb_cs;
-  reg           tb_we;
-  reg [7 : 0]   tb_address;
-  reg [31 : 0]  tb_write_data;
-  wire [31 : 0] tb_read_data;
-  wire          tb_error;
-  reg [31 : 0]  read_data;
+  reg           tb_init;
+  reg           tb_next;
+  reg  [127 : 0] tb_h;
+  reg  [127 : 0] tb_block;
+  wire           tb_ready;
+  wire [127 : 0] tb_y;
 
 
   //----------------------------------------------------------------
   // Device Under Test.
   //----------------------------------------------------------------
-  gcm dut(
-          .clk(tb_clk),
-          .reset_n(tb_reset_n),
-
-          .cs(tb_cs),
-          .we(tb_we),
-          .address(tb_address),
-          .write_data(tb_write_data),
-          .read_data(tb_read_data)
-         );
+  gcm_ghash dut(
+    .clk     (tb_clk),
+    .reset_n (tb_reset_n),
+    .init    (tb_init),
+    .next    (tb_next),
+    .h       (tb_h),
+    .block   (tb_block),
+    .ready   (tb_ready),
+    .y       (tb_y)
+  );
 
 
   //----------------------------------------------------------------
   // clk_gen
-  //
-  // Clock generator process.
   //----------------------------------------------------------------
-  always
-    begin : clk_gen
-      #CLK_HALF_PERIOD tb_clk = !tb_clk;
-    end // clk_gen
+  always begin : clk_gen
+    #CLK_HALF_PERIOD tb_clk = !tb_clk;
+  end
 
 
   //----------------------------------------------------------------
   // sys_monitor
-  //
-  // Generates a cycle counter and displays information about
-  // the dut as needed.
   //----------------------------------------------------------------
-  always
-    begin : sys_monitor
-      #(2 * CLK_HALF_PERIOD);
-      cycle_ctr = cycle_ctr + 1;
-    end
+  always begin : sys_monitor
+    #(CLK_PERIOD);
+    cycle_ctr = cycle_ctr + 1;
+  end
 
 
   //----------------------------------------------------------------
-  // dump_dut_state()
-  //
-  // Dump the state of the dump when needed.
+  // init_sim()
   //----------------------------------------------------------------
-  task dump_dut_state;
+  task init_sim;
     begin
-      $display("State of DUT");
-      $display("------------");
-      $display("Inputs and outputs:");
-      $display("cs = 0x%01x, we = 0x%01x",
-               dut.cs, dut.we);
-      $display("address = 0x%02x", dut.address);
-      $display("write_data = 0x%08x, read_data = 0x%08x",
-               dut.write_data, dut.read_data);
-      $display("tmp_read_data = 0x%08x", dut.tmp_read_data);
-      $display("");
-
-      $display("Control and status:");
-      $display("");
+      cycle_ctr  = 32'h0;
+      error_ctr  = 32'h0;
+      tc_ctr     = 32'h0;
+      tb_clk     = 0;
+      tb_reset_n = 0;
+      tb_init    = 0;
+      tb_next    = 0;
+      tb_h       = 128'h0;
+      tb_block   = 128'h0;
     end
-  endtask // dump_dut_state
+  endtask
 
 
   //----------------------------------------------------------------
   // reset_dut()
-  //
-  // Toggles reset to force the DUT into a well defined state.
   //----------------------------------------------------------------
   task reset_dut;
     begin
@@ -157,184 +105,167 @@ module tb_gcm();
       #(4 * CLK_HALF_PERIOD);
       tb_reset_n = 1;
     end
-  endtask // reset_dut
-
-
-  //----------------------------------------------------------------
-  // init_sim()
-  //
-  // Initialize all counters and testbed functionality as well
-  // as setting the DUT inputs to defined values.
-  //----------------------------------------------------------------
-  task init_sim;
-    begin
-      cycle_ctr = 32'h0;
-      error_ctr = 32'h0;
-      tc_ctr = 32'h0;
-
-      tb_clk = 0;
-      tb_reset_n = 0;
-      tb_cs = 0;
-      tb_we = 0;
-      tb_address = 6'h0;
-      tb_write_data = 32'h0;
-    end
-  endtask // init_dut
+  endtask
 
 
   //----------------------------------------------------------------
   // display_test_result()
-  //
-  // Display the accumulated test results.
   //----------------------------------------------------------------
   task display_test_result;
     begin
       if (error_ctr == 0)
-        begin
-          $display("*** All %02d test cases completed successfully.", tc_ctr);
-        end
-      else
-        begin
-          $display("*** %02d test cases completed.", tc_ctr);
-          $display("*** %02d errors detected during testing.", error_ctr);
-        end
+        $display("*** All %02d test cases completed successfully.", tc_ctr);
+      else begin
+        $display("*** %02d test cases completed.", tc_ctr);
+        $display("*** %02d errors detected during testing.", error_ctr);
+      end
     end
-  endtask // display_test_result
+  endtask
 
 
   //----------------------------------------------------------------
   // wait_ready()
   //
-  // Wait for the ready flag in the dut to be set.
-  // (Actually we wait for either ready or valid to be set.)
-  //
-  // Note: It is the callers responsibility to call the function
-  // when the dut is actively processing and will in fact at some
-  // point set the flag.
+  // Wait for gcm_ghash to assert ready.  Prints a timeout message
+  // if ready does not arrive within TIMEOUT_CYCLES clocks.
   //----------------------------------------------------------------
   task wait_ready;
+    reg [31 : 0] wait_ctr;
     begin
-      read_data = 0;
-
-      while (read_data == 0)
-        begin
-          read_word(ADDR_STATUS);
-        end
+      wait_ctr = 0;
+      while (!tb_ready && wait_ctr < TIMEOUT_CYCLES) begin
+        #(CLK_PERIOD);
+        wait_ctr = wait_ctr + 1;
+      end
+      if (wait_ctr == TIMEOUT_CYCLES)
+        $display("TIMEOUT: gcm_ghash.ready did not assert within %0d cycles.", TIMEOUT_CYCLES);
     end
-  endtask // wait_ready
+  endtask
 
 
   //----------------------------------------------------------------
-  // write_word()
+  // ghash_init()
   //
-  // Write the given word to the DUT using the DUT interface.
+  // Assert init for one clock so the module latches H and resets
+  // the accumulator.  No need to wait for ready afterwards since
+  // init does not change the FSM state.
   //----------------------------------------------------------------
-  task write_word(input [7 : 0]  address,
-                  input [31 : 0] word);
+  task ghash_init(input [127 : 0] h_val);
     begin
-      if (DEBUG)
-        begin
-          $display("*** Writing 0x%08x to 0x%02x.", word, address);
-          $display("");
-        end
-
-      tb_address = address;
-      tb_write_data = word;
-      tb_cs = 1;
-      tb_we = 1;
+      tb_h    = h_val;
+      tb_init = 1'b1;
       #(CLK_PERIOD);
-      tb_cs = 0;
-      tb_we = 0;
+      tb_init = 1'b0;
     end
-  endtask // write_word
+  endtask
 
 
   //----------------------------------------------------------------
-  // read_word()
+  // ghash_next()
   //
-  // Read a data word from the given address in the DUT.
-  // the word read will be available in the global variable
-  // read_data.
+  // Assert next for one clock to process one 128-bit GHASH block,
+  // then wait for the GF(2^128) multiplication to complete.
   //----------------------------------------------------------------
-  task read_word(input [7 : 0]  address);
+  task ghash_next(input [127 : 0] block_val);
     begin
-      tb_address = address;
-      tb_cs = 1;
-      tb_we = 0;
+      tb_block = block_val;
+      tb_next  = 1'b1;
       #(CLK_PERIOD);
-      read_data = tb_read_data;
-      tb_cs = 0;
-
-      if (DEBUG)
-        begin
-          $display("*** Reading 0x%08x from 0x%02x.", read_data, address);
-          $display("");
-        end
+      tb_next  = 1'b0;
+      wait_ready();
     end
-  endtask // read_word
+  endtask
 
 
   //----------------------------------------------------------------
-  // check_name_version()
+  // check_output()
   //
-  // Read the name and version from the DUT.
+  // Compare tb_y against expected and update counters.
   //----------------------------------------------------------------
-  task check_name_version;
-    reg [31 : 0] name0;
-    reg [31 : 0] name1;
-    reg [31 : 0] version;
+  task check_output(input [127 : 0] expected);
     begin
-
-      read_word(ADDR_NAME0);
-      name0 = read_data;
-      read_word(ADDR_NAME1);
-      name1 = read_data;
-      read_word(ADDR_VERSION);
-      version = read_data;
-
-      $display("DUT name: %c%c%c%c%c%c%c%c",
-               name0[31 : 24], name0[23 : 16], name0[15 : 8], name0[7 : 0],
-               name1[31 : 24], name1[23 : 16], name1[15 : 8], name1[7 : 0]);
-      $display("DUT version: %c%c%c%c",
-               version[31 : 24], version[23 : 16], version[15 : 8], version[7 : 0]);
+      tc_ctr = tc_ctr + 1;
+      if (tb_y !== expected) begin
+        $display("TC%02d FAILED:", tc_ctr);
+        $display("  expected: %h", expected);
+        $display("  got:      %h", tb_y);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: y = %h", tc_ctr, tb_y);
     end
-  endtask // check_name_version
+  endtask
 
 
   //----------------------------------------------------------------
-  // gcm_tests()
+  // ghash_tests()
+  //
+  // All test vectors are algebraically self-verifiable:
+  //
+  //   TC01: H=0 means v stays 0 through all GMUL rounds → Y=0
+  //   TC02: block=0 means x=0 XOR 0=0, no bit set → Y=0
+  //   TC03: H is the GCM multiplicative identity "1" = 0x80..0,
+  //         so Y = block * 1 = block
+  //   TC04: H="x"=0x40..0, block="1"=0x80..0 → Y = 1*x = "x"
+  //   TC05: Multi-block with H="1": after two blocks
+  //         Y = (Y1 XOR block2) * 1 = block1 XOR block2
   //----------------------------------------------------------------
-  task gcm_tests;
-    begin : gcm_tests
+  task ghash_tests;
+    begin
+      $display("*** Testcases for gcm_ghash started.");
 
-      $display("*** Testcases for gcm functionality started.");
+      // TC01: H=0, any block → Y=0 (v=0 throughout all GMUL rounds)
+      ghash_init(128'h0);
+      ghash_next(128'h0102030405060708090a0b0c0d0e0f10);
+      check_output(128'h0);
 
-      $display("*** Testcases for gcm functionality completed.");
+      // TC02: H=real, block=0 → Y=0 (x = y_prev XOR 0 = 0, no bits set)
+      ghash_init(128'h66e94bd4ef8a2c3b884cfa59ca342b2e);
+      ghash_next(128'h0);
+      check_output(128'h0);
+
+      // TC03: H="1"=0x80..0 (GCM identity element) → Y = block
+      ghash_init(128'h80000000000000000000000000000000);
+      ghash_next(128'h0102030405060708090a0b0c0d0e0f10);
+      check_output(128'h0102030405060708090a0b0c0d0e0f10);
+
+      // TC04: H="x"=0x40..0, block="1"=0x80..0 → Y = "x"
+      // Only the MSB of block is set, contributing v=H at step 0.
+      // All subsequent steps: x becomes 0, y is never further updated.
+      ghash_init(128'h40000000000000000000000000000000);
+      ghash_next(128'h80000000000000000000000000000000);
+      check_output(128'h40000000000000000000000000000000);
+
+      // TC05: Multi-block with H="1"
+      // After next(block1): Y = block1 * "1" = block1
+      // After next(block2): Y = (block1 XOR block2) * "1" = block1 XOR block2
+      // block1 XOR block2 = 10 10 ... 10 30 (bytes differ by 0x10, last byte 10^20=30)
+      ghash_init(128'h80000000000000000000000000000000);
+      ghash_next(128'h0102030405060708090a0b0c0d0e0f10);
+      ghash_next(128'h1112131415161718191a1b1c1d1e1f20);
+      check_output(128'h10101010101010101010101010101030);
+
+      $display("*** Testcases for gcm_ghash completed.");
     end
-  endtask // gcm_tests
+  endtask
 
 
   //----------------------------------------------------------------
-  // gcm_test
   // The main test functionality.
   //----------------------------------------------------------------
-  initial
-    begin : gcm_test
-      $display("   -- Testbench for gcm started --");
+  initial begin : ghash_test
+    $display("   -- Testbench for gcm_ghash started --");
 
-      init_sim();
-      reset_dut();
+    init_sim();
+    reset_dut();
+    ghash_tests();
+    display_test_result();
 
-      check_name_version();
-      gcm_tests();
+    $display("   -- Testbench for gcm_ghash done. --");
+    $finish;
+  end
 
-      display_test_result();
-
-      $display("   -- Testbench for gcm done. --");
-      $finish;
-    end // gcm_test
-endmodule // tb_gcm
+endmodule // tb_gcm_ghash
 
 //======================================================================
-// EOF tb_gcm.v
+// EOF tb_gcm_ghash.v
 //======================================================================
