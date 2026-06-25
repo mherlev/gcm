@@ -169,8 +169,10 @@ module gcm(
   assign read_data = tmp_read_data;
 
   assign core_block_in = {block_reg[0], block_reg[1], block_reg[2], block_reg[3]};
-  assign core_key    = {key_reg[0], key_reg[1], key_reg[2], key_reg[3],
-                        key_reg[4], key_reg[5], key_reg[6], key_reg[7]};
+  assign core_key      = {key_reg[0], key_reg[1], key_reg[2], key_reg[3],
+                          key_reg[4], key_reg[5], key_reg[6], key_reg[7]};
+  assign core_nonce    = {nonce_reg[0], nonce_reg[1], nonce_reg[2], nonce_reg[3]};
+  assign core_keylen   = keylen_reg;
 
 
   //----------------------------------------------------------------
@@ -264,10 +266,10 @@ module gcm(
             key_reg[key_address] <= write_data;
 
           if (nonce_we)
-            key_reg[nonce_address] <= write_data;
+            nonce_reg[nonce_address] <= write_data;
 
           if (tag_we)
-            key_reg[tag_address] <= write_data;
+            tag_reg[tag_address] <= write_data;
         end
     end // reg_update
 
@@ -354,10 +356,10 @@ module gcm(
                 tmp_read_data = block_reg[block_address];
 
               if ((address >= ADDR_NONCE0) && (address <= ADDR_NONCE3))
-                tmp_read_data = block_reg[nonce_address];
+                tmp_read_data = nonce_reg[nonce_address];
 
               if ((address >= ADDR_TAG0) && (address <= ADDR_TAG3))
-                tmp_read_data = block_reg[tag_address];
+                tmp_read_data = tag_reg[tag_address];
             end
         end
     end // addr_decoder
