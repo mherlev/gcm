@@ -86,6 +86,11 @@ module tb_gcm();
   parameter ADDR_NONCE2      = 8'h32;
   parameter ADDR_NONCE3      = 8'h33;
 
+  parameter ADDR_TAG0        = 8'h40;
+  parameter ADDR_TAG1        = 8'h41;
+  parameter ADDR_TAG2        = 8'h42;
+  parameter ADDR_TAG3        = 8'h43;
+
 
   //----------------------------------------------------------------
   // Register and Wire declarations.
@@ -409,6 +414,104 @@ module tb_gcm();
 
 
   //----------------------------------------------------------------
+  // reg_map_tests()
+  //
+  // Write known values to nonce and tag registers then read them
+  // back.  Also verify that core_nonce and core_keylen are correctly
+  // wired to the register file.  These tests exercise the three bugs
+  // fixed in issue #9 and require no functional core logic.
+  //----------------------------------------------------------------
+  task reg_map_tests;
+    reg [127 : 0] exp_nonce;
+    reg [127 : 0] exp_tag;
+    reg [127 : 0] got_nonce;
+    reg [127 : 0] got_tag;
+    begin
+      $display("*** Register map tests started.");
+
+      // TC_RM01: nonce write/readback
+      // Write a distinct 32-bit word to each nonce register and read
+      // each word back.  Before the fix these writes went to key_reg
+      // and reads returned block_reg, so the values would not match.
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: nonce register write/readback", tc_ctr);
+
+      exp_nonce = 128'hdeadbeef_cafebabe_01234567_89abcdef;
+
+      write_word(ADDR_NONCE0, exp_nonce[127 : 96]);
+      write_word(ADDR_NONCE1, exp_nonce[ 95 : 64]);
+      write_word(ADDR_NONCE2, exp_nonce[ 63 : 32]);
+      write_word(ADDR_NONCE3, exp_nonce[ 31 :  0]);
+
+      read_word(ADDR_NONCE0); got_nonce[127 : 96] = read_data;
+      read_word(ADDR_NONCE1); got_nonce[ 95 : 64] = read_data;
+      read_word(ADDR_NONCE2); got_nonce[ 63 : 32] = read_data;
+      read_word(ADDR_NONCE3); got_nonce[ 31 :  0] = read_data;
+
+      if (got_nonce !== exp_nonce) begin
+        $display("TC%02d FAILED: nonce readback mismatch", tc_ctr);
+        $display("  expected: %h", exp_nonce);
+        $display("  got:      %h", got_nonce);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: nonce = %h", tc_ctr, got_nonce);
+
+      // TC_RM02: tag write/readback
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: tag register write/readback", tc_ctr);
+
+      exp_tag = 128'h11223344_55667788_99aabbcc_ddeeff00;
+
+      write_word(ADDR_TAG0, exp_tag[127 : 96]);
+      write_word(ADDR_TAG1, exp_tag[ 95 : 64]);
+      write_word(ADDR_TAG2, exp_tag[ 63 : 32]);
+      write_word(ADDR_TAG3, exp_tag[ 31 :  0]);
+
+      read_word(ADDR_TAG0); got_tag[127 : 96] = read_data;
+      read_word(ADDR_TAG1); got_tag[ 95 : 64] = read_data;
+      read_word(ADDR_TAG2); got_tag[ 63 : 32] = read_data;
+      read_word(ADDR_TAG3); got_tag[ 31 :  0] = read_data;
+
+      if (got_tag !== exp_tag) begin
+        $display("TC%02d FAILED: tag readback mismatch", tc_ctr);
+        $display("  expected: %h", exp_tag);
+        $display("  got:      %h", got_tag);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: tag = %h", tc_ctr, got_tag);
+
+      // TC_RM03: core_nonce wiring
+      // After writing to the nonce registers, check that the wire
+      // reaching gcm_core carries the same 128-bit value.
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: core_nonce wiring", tc_ctr);
+
+      if (dut.core_nonce !== exp_nonce) begin
+        $display("TC%02d FAILED: core_nonce mismatch", tc_ctr);
+        $display("  expected: %h", exp_nonce);
+        $display("  got:      %h", dut.core_nonce);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: core_nonce = %h", tc_ctr, dut.core_nonce);
+
+      // TC_RM04: core_keylen wiring
+      // Write keylen=1 (AES-256) via CONFIG, then check the wire.
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: core_keylen wiring", tc_ctr);
+
+      write_word(ADDR_CONFIG, 32'h2); // bit1 = keylen = 1
+      if (dut.core_keylen !== 1'b1) begin
+        $display("TC%02d FAILED: core_keylen expected 1, got %b", tc_ctr, dut.core_keylen);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: core_keylen = %b", tc_ctr, dut.core_keylen);
+
+      $display("*** Register map tests completed.");
+    end
+  endtask // reg_map_tests
+
+
+  //----------------------------------------------------------------
   // gcm_tests()
   //
   // Test vectors from NIST SP 800-38D, Appendix B.
@@ -510,6 +613,7 @@ module tb_gcm();
       reset_dut();
 
       check_name_version();
+      reg_map_tests();
       gcm_tests();
 
       display_test_result();
