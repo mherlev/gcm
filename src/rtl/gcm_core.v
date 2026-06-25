@@ -137,8 +137,8 @@ module gcm_core(
                   .next(ghash_next),
                   .ready(ghash_ready),
 
-                  .h0(ghash_h0),
-                  .x(ghash_x),
+                  .h(ghash_h0),
+                  .block(ghash_x),
                   .y(ghash_y)
                  );
 

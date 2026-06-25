@@ -42,7 +42,7 @@
           };
         in
         {
-          ghash   = mkSim "ghash.sim" "${gcmTb}/tb_gcm_ghash.v ${gcmRtl}/gcm_ghash.v";
+          ghash   = mkSim "ghash.sim" "${gcmTb}/tb_gcm_ghash.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
           core    = mkSim "core.sim"  "${gcmTb}/tb_gcm_core.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
           top     = mkSim "top.sim"   "${gcmTb}/tb_gcm.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
           default = mkSim "top.sim"   "${gcmTb}/tb_gcm.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
