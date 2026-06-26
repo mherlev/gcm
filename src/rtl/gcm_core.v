@@ -63,12 +63,15 @@ module gcm_core(
   //----------------------------------------------------------------
   // Internal constant and parameter definitions.
   //----------------------------------------------------------------
-  localparam CTRL_IDLE        = 3'h0;
-  localparam CTRL_INIT_AES    = 3'h1; // assert aes_init for one cycle
-  localparam CTRL_WAIT_KEY    = 3'h2; // wait for AES key expansion
-  localparam CTRL_INIT_H      = 3'h3; // assert aes_next with zero block
-  localparam CTRL_WAIT_H      = 3'h4; // wait for AES to produce H
-  localparam CTRL_INIT_GHASH  = 3'h5; // load H into GHASH, assert ready
+  localparam CTRL_IDLE        = 4'h0;
+  localparam CTRL_INIT_AES    = 4'h1; // assert aes_init for one cycle
+  localparam CTRL_WAIT_KEY    = 4'h2; // wait for AES key expansion
+  localparam CTRL_INIT_H      = 4'h3; // assert aes_next with zero block
+  localparam CTRL_WAIT_H      = 4'h4; // wait for AES to produce H
+  localparam CTRL_INIT_GHASH  = 4'h5; // load H into GHASH, load nonce, assert ready
+  localparam CTRL_NEXT_AES    = 4'h6; // assert aes_next with counter block
+  localparam CTRL_WAIT_AES    = 4'h7; // wait for AES result, start GHASH
+  localparam CTRL_WAIT_GHASH  = 4'h8; // wait for GHASH, assert valid
 
 
   //----------------------------------------------------------------
@@ -82,12 +85,20 @@ module gcm_core(
   reg [127 : 0] h_new;
   reg           h_we;
 
+  reg [127 : 0] block_out_reg;
+  reg [127 : 0] block_out_new;
+  reg           block_out_we;
+
   reg           ready_reg;
   reg           ready_new;
   reg           ready_we;
 
-  reg [2 : 0]   gcm_ctrl_reg;
-  reg [2 : 0]   gcm_ctrl_new;
+  reg           valid_reg;
+  reg           valid_new;
+  reg           valid_we;
+
+  reg [3 : 0]   gcm_ctrl_reg;
+  reg [3 : 0]   gcm_ctrl_new;
   reg           gcm_ctrl_we;
 
 
@@ -118,9 +129,9 @@ module gcm_core(
   //----------------------------------------------------------------
   assign aes_encdec  = 1'b1; // GCM only needs AES encryption
   assign ready       = ready_reg;
-  assign valid       = 1'b0; // driven in CTRL_NEXT (issue #12)
+  assign valid       = valid_reg;
   assign tag_correct = 1'b0;
-  assign block_out   = aes_result;
+  assign block_out   = block_out_reg;
   assign tag_out     = 128'h0;
 
 
@@ -168,7 +179,9 @@ module gcm_core(
         begin
           ctr_reg      <= 128'h0;
           h_reg        <= 128'h0;
+          block_out_reg <= 128'h0;
           ready_reg    <= 1'h0;
+          valid_reg    <= 1'h0;
           gcm_ctrl_reg <= CTRL_IDLE;
         end
       else
@@ -179,8 +192,14 @@ module gcm_core(
           if (h_we)
             h_reg <= h_new;
 
+          if (block_out_we)
+            block_out_reg <= block_out_new;
+
           if (ready_we)
             ready_reg <= ready_new;
+
+          if (valid_we)
+            valid_reg <= valid_new;
 
           if (gcm_ctrl_we)
             gcm_ctrl_reg <= gcm_ctrl_new;
@@ -213,39 +232,58 @@ module gcm_core(
   //----------------------------------------------------------------
   // gcm_core_ctrl_fsm
   //
-  // CTRL_IDLE       — wait for init or next
-  // CTRL_INIT_AES   — pulse aes_init to start key expansion
-  // CTRL_WAIT_KEY   — wait for aes_ready (key expansion complete)
-  // CTRL_INIT_H     — pulse aes_next with zero block to compute H
-  // CTRL_WAIT_H     — wait for aes_ready, latch result as h_reg
-  // CTRL_INIT_GHASH — load H into gcm_ghash, assert ready
+  // CTRL_IDLE        — wait for init or next
+  // CTRL_INIT_AES    — pulse aes_init to start key expansion
+  // CTRL_WAIT_KEY    — wait for aes_ready (key expansion complete)
+  // CTRL_INIT_H      — pulse aes_next with zero block to compute H
+  // CTRL_WAIT_H      — wait for aes_ready, latch result as h_reg
+  // CTRL_INIT_GHASH  — load H into gcm_ghash, load nonce, assert ready
+  // CTRL_NEXT_AES    — pulse aes_next with ctr_reg to encrypt counter
+  // CTRL_WAIT_AES    — wait for aes_ready, XOR with block_in, start GHASH
+  // CTRL_WAIT_GHASH  — wait for ghash_ready, assert valid and ready
   //----------------------------------------------------------------
   always @*
     begin : gcm_core_ctrl_fsm
-      aes_init     = 1'h0;
-      aes_next     = 1'h0;
-      aes_block    = block_in;
-      ctr_init     = 1'h0;
-      ctr_next     = 1'h0;
-      ghash_init   = 1'h0;
-      ghash_next   = 1'h0;
-      ghash_h0     = h_reg;
-      ghash_x      = 128'h0;
-      h_new        = 128'h0;
-      h_we         = 1'h0;
-      ready_new    = 1'h0;
-      ready_we     = 1'h0;
-      gcm_ctrl_new = CTRL_IDLE;
-      gcm_ctrl_we  = 1'h0;
+      aes_init      = 1'h0;
+      aes_next      = 1'h0;
+      aes_block     = block_in;
+      ctr_init      = 1'h0;
+      ctr_next      = 1'h0;
+      ghash_init    = 1'h0;
+      ghash_next    = 1'h0;
+      ghash_h0      = h_reg;
+      ghash_x       = 128'h0;
+      h_new         = 128'h0;
+      h_we          = 1'h0;
+      block_out_new = 128'h0;
+      block_out_we  = 1'h0;
+      ready_new     = 1'h0;
+      ready_we      = 1'h0;
+      valid_new     = 1'h0;
+      valid_we      = 1'h0;
+      gcm_ctrl_new  = CTRL_IDLE;
+      gcm_ctrl_we   = 1'h0;
 
       case (gcm_ctrl_reg)
         CTRL_IDLE:
           begin
             if (init)
               begin
+                valid_new    = 1'h0;
+                valid_we     = 1'h1;
                 ready_new    = 1'h0;
                 ready_we     = 1'h1;
                 gcm_ctrl_new = CTRL_INIT_AES;
+                gcm_ctrl_we  = 1'h1;
+              end
+            if (next)
+              begin
+                ctr_next     = 1'h1; // increment J0 → J1 before encrypting
+                valid_new    = 1'h0;
+                valid_we     = 1'h1;
+                ready_new    = 1'h0;
+                ready_we     = 1'h1;
+                gcm_ctrl_new = CTRL_NEXT_AES;
                 gcm_ctrl_we  = 1'h1;
               end
           end
@@ -300,10 +338,56 @@ module gcm_core(
           begin
             ghash_init   = 1'h1;
             ghash_h0     = h_reg;
+            ctr_init     = 1'h1; // load nonce into ctr_reg so first next increments to J0+1
             ready_new    = 1'h1;
             ready_we     = 1'h1;
             gcm_ctrl_new = CTRL_IDLE;
             gcm_ctrl_we  = 1'h1;
+          end
+
+        CTRL_NEXT_AES:
+          begin
+            aes_next     = 1'h1;
+            aes_block    = ctr_reg; // ctr_reg was already incremented in CTRL_IDLE
+            gcm_ctrl_new = CTRL_WAIT_AES;
+            gcm_ctrl_we  = 1'h1;
+          end
+
+        CTRL_WAIT_AES:
+          begin
+            aes_block = ctr_reg; // hold counter block for encipher (reads block combinatorially in CTRL_INIT)
+            if (aes_ready)
+              begin
+                block_out_new = block_in ^ aes_result; // ciphertext = plaintext XOR keystream
+                block_out_we  = 1'h1;
+                ghash_next    = 1'h1;
+                ghash_x       = block_in ^ aes_result; // GHASH authenticates ciphertext
+                gcm_ctrl_new  = CTRL_WAIT_GHASH;
+                gcm_ctrl_we   = 1'h1;
+              end
+            else
+              begin
+                gcm_ctrl_new = CTRL_WAIT_AES;
+                gcm_ctrl_we  = 1'h1;
+              end
+          end
+
+        CTRL_WAIT_GHASH:
+          begin
+            if (ghash_ready)
+              begin
+                valid_new    = 1'h1;
+                valid_we     = 1'h1;
+                ready_new    = 1'h1;
+                ready_we     = 1'h1;
+                gcm_ctrl_new = CTRL_IDLE;
+                gcm_ctrl_we  = 1'h1;
+              end
+            else
+              begin
+                gcm_ctrl_new = CTRL_WAIT_GHASH;
+                gcm_ctrl_we  = 1'h1;
+              end
           end
 
         default:
