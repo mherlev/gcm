@@ -333,10 +333,19 @@ module tb_gcm();
   // Write a plaintext block, trigger encryption, wait for valid.
   //----------------------------------------------------------------
   task gcm_encrypt_block(input [127 : 0] plaintext);
+    reg [31 : 0] wait_ctr;
     begin
       write_block(plaintext);
       write_word(ADDR_CTRL, 32'h2);
-      wait_ready();
+      wait_ctr = 0;
+      read_data = 0;
+      while (!read_data[STATUS_VALID_BIT] && wait_ctr < TIMEOUT_CYCLES)
+        begin
+          read_word(ADDR_STATUS);
+          wait_ctr = wait_ctr + 1;
+        end
+      if (wait_ctr == TIMEOUT_CYCLES)
+        $display("TIMEOUT: DUT did not assert valid within %0d cycles.", TIMEOUT_CYCLES);
     end
   endtask // gcm_encrypt_block
 
@@ -623,6 +632,62 @@ module tb_gcm();
 
 
   //----------------------------------------------------------------
+  // gcm_core_next_tests()
+  //
+  // Verify that CTRL_NEXT in gcm_core performs CTR encryption and
+  // updates GHASH, then asserts valid.
+  //
+  // TC_CN01: valid bit in STATUS asserts after a next operation.
+  //          Referencing dut.core.valid_reg causes a compile error
+  //          until the register is declared — TDD red step.
+  // TC_CN02: NIST SP 800-38D TC2 ciphertext is correct.
+  //          K=0, IV=0 (J0=0x01), P=0 → C=0388dace60b6a392f328c2b971b2fe78
+  //----------------------------------------------------------------
+  task gcm_core_next_tests;
+    reg [127 : 0] result;
+    begin
+      $display("*** GCM core CTRL_NEXT tests started.");
+
+      reset_dut();
+
+      // TC_CN01: valid asserts after AES-128 block encryption
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: valid asserts after AES-128 encrypt (K=0, P=0)", tc_ctr);
+
+      gcm_init(256'h0, 1'b0, 128'h00000000000000000000000000000001);
+      gcm_encrypt_block(128'h0);
+
+      read_word(ADDR_STATUS);
+      if (!read_data[STATUS_VALID_BIT]) begin
+        $display("TC%02d FAILED: valid did not assert (status=%08x, valid_reg=%b)",
+                 tc_ctr, read_data, dut.core.valid_reg);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: valid asserted, status = %08x", tc_ctr, read_data);
+
+      // TC_CN02: NIST TC2 ciphertext readable from ADDR_RESULT0-3
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: NIST TC2 ciphertext = 0388dace60b6a392f328c2b971b2fe78", tc_ctr);
+
+      read_word(ADDR_RESULT0); result[127 : 96] = read_data;
+      read_word(ADDR_RESULT1); result[ 95 : 64] = read_data;
+      read_word(ADDR_RESULT2); result[ 63 : 32] = read_data;
+      read_word(ADDR_RESULT3); result[ 31 :  0] = read_data;
+
+      if (result !== 128'h0388dace60b6a392f328c2b971b2fe78) begin
+        $display("TC%02d FAILED:", tc_ctr);
+        $display("  expected: 0388dace60b6a392f328c2b971b2fe78");
+        $display("  got:      %h", result);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: ciphertext = %h", tc_ctr, result);
+
+      $display("*** GCM core CTRL_NEXT tests completed.");
+    end
+  endtask // gcm_core_next_tests
+
+
+  //----------------------------------------------------------------
   // gcm_tests()
   //
   // Test vectors from NIST SP 800-38D, Appendix B.
@@ -727,6 +792,7 @@ module tb_gcm();
       reg_map_tests();
       result_readback_tests();
       gcm_core_init_tests();
+      gcm_core_next_tests();
       gcm_tests();
 
       display_test_result();
