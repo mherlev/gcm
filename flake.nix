@@ -46,6 +46,21 @@
           core    = mkSim "core.sim"  "${gcmTb}/tb_gcm_core.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
           top     = mkSim "top.sim"   "${gcmTb}/tb_gcm.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
           default = mkSim "top.sim"   "${gcmTb}/tb_gcm.v ${gcmRtl}/gcm.v ${gcmRtl}/gcm_core.v ${gcmRtl}/gcm_ghash.v ${aesSrcs}";
+
+          ghash-model = pkgs.stdenv.mkDerivation {
+            pname   = "ghash-model";
+            version = "0.1";
+            src     = self;
+            buildPhase = ''
+              cc -std=c99 -Wall -Wextra -O2 \
+                 -o test_nettle_ghash_ref \
+                 src/model/test_nettle_ghash_ref.c src/model/nettle_ghash_ref.c
+            '';
+            installPhase = ''
+              mkdir -p $out/bin
+              cp test_nettle_ghash_ref $out/bin/
+            '';
+          };
         });
 
       checks = forAllSystems (system:
@@ -74,9 +89,14 @@
             installPhase = "touch $out";
           };
 
-          sim-ghash = mkSimCheck "ghash" pkgs'.ghash;
-          sim-core  = mkSimCheck "core"  pkgs'.core;
-          sim-top   = mkSimCheck "top"   pkgs'.top;
+          sim-ghash       = mkSimCheck "ghash" pkgs'.ghash;
+          sim-core        = mkSimCheck "core"  pkgs'.core;
+          sim-top         = mkSimCheck "top"   pkgs'.top;
+
+          sim-ghash-model = pkgs.runCommand "sim-ghash-model" {} ''
+            ${pkgs'.ghash-model}/bin/test_nettle_ghash_ref >&2
+            touch $out
+          '';
         });
     };
 }

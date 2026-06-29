@@ -199,7 +199,7 @@ module tb_gcm_ghash();
   //----------------------------------------------------------------
   // ghash_tests()
   //
-  // All test vectors are algebraically self-verifiable:
+  // TC01–TC05: algebraically self-verifiable corner cases.
   //
   //   TC01: H=0 means v stays 0 through all GMUL rounds → Y=0
   //   TC02: block=0 means x=0 XOR 0=0, no bit set → Y=0
@@ -208,6 +208,22 @@ module tb_gcm_ghash();
   //   TC04: H="x"=0x40..0, block="1"=0x80..0 → Y = 1*x = "x"
   //   TC05: Multi-block with H="1": after two blocks
   //         Y = (Y1 XOR block2) * 1 = block1 XOR block2
+  //
+  // TC06–TC09: NIST SP 800-38D cross-check via nettle_ghash_ref model.
+  //   Expected values produced by test_nettle_ghash_ref.c; TC06/TC08
+  //   are back-verified as GHASH_final XOR E(K,J0) == published tag.
+  //
+  //   TC06: TC2 (AES-128) single ciphertext block through GHASH
+  //         H=66e94bd4..., C1=0388dace...
+  //         → 5e2ec746917062882c85b0685353deb7
+  //   TC07: TC2 (AES-128) full GHASH: C1 then len block
+  //         → f38cbb1ad69223dcc3457ae5b6b0f885
+  //         (XOR E(K,J0)=58e2fcce... = TC2 tag ab6e47d4... ✓)
+  //   TC08: TC14 (AES-256) single ciphertext block through GHASH
+  //         H_256=dc95c078..., C1_256=cea7403d...
+  //         → fd6ab7586e556dba06d69cfe6223b262
+  //   TC09: TC14 (AES-256) full GHASH: C1 then len block
+  //         → 83de425c5edc5d498f382c441041ca92
   //----------------------------------------------------------------
   task ghash_tests;
     begin
@@ -229,20 +245,43 @@ module tb_gcm_ghash();
       check_output(128'h0102030405060708090a0b0c0d0e0f10);
 
       // TC04: H="x"=0x40..0, block="1"=0x80..0 → Y = "x"
-      // Only the MSB of block is set, contributing v=H at step 0.
-      // All subsequent steps: x becomes 0, y is never further updated.
       ghash_init(128'h40000000000000000000000000000000);
       ghash_next(128'h80000000000000000000000000000000);
       check_output(128'h40000000000000000000000000000000);
 
       // TC05: Multi-block with H="1"
-      // After next(block1): Y = block1 * "1" = block1
-      // After next(block2): Y = (block1 XOR block2) * "1" = block1 XOR block2
-      // block1 XOR block2 = 10 10 ... 10 30 (bytes differ by 0x10, last byte 10^20=30)
       ghash_init(128'h80000000000000000000000000000000);
       ghash_next(128'h0102030405060708090a0b0c0d0e0f10);
       ghash_next(128'h1112131415161718191a1b1c1d1e1f20);
       check_output(128'h10101010101010101010101010101030);
+
+      // TC06: NIST TC2 — GHASH(H, [C1]) (model-derived)
+      // H = AES(K=0, 0^128) = 66e94bd4ef8a2c3b884cfa59ca342b2e
+      // C1 = AES(K, J0+1) XOR P = 0388dace60b6a392f328c2b971b2fe78
+      ghash_init(128'h66e94bd4ef8a2c3b884cfa59ca342b2e);
+      ghash_next(128'h0388dace60b6a392f328c2b971b2fe78);
+      check_output(128'h5e2ec746917062882c85b0685353deb7);
+
+      // TC07: NIST TC2 — GHASH(H, [C1 || len_block])
+      // len_block = {len(A)=0, len(C)=128 bits} = 0x00000000000000000000000000000080
+      // Result XOR E(K,J0)=58e2fccefa7e3061367f1d57a4e7455a = TC2 tag ab6e47d4... ✓
+      ghash_init(128'h66e94bd4ef8a2c3b884cfa59ca342b2e);
+      ghash_next(128'h0388dace60b6a392f328c2b971b2fe78);
+      ghash_next(128'h00000000000000000000000000000080);
+      check_output(128'hf38cbb1ad69223dcc3457ae5b6b0f885);
+
+      // TC08: NIST TC14 — GHASH(H_256, [C1_256]) (model-derived)
+      // H_256 = AES-256(K=0, 0^128) = dc95c078a2408989ad48a21492842087
+      // C1_256 = cea7403d4d606b6e074ec5d3baf39d18
+      ghash_init(128'hdc95c078a2408989ad48a21492842087);
+      ghash_next(128'hcea7403d4d606b6e074ec5d3baf39d18);
+      check_output(128'hfd6ab7586e556dba06d69cfe6223b262);
+
+      // TC09: NIST TC14 — GHASH(H_256, [C1_256 || len_block]) (model-derived)
+      ghash_init(128'hdc95c078a2408989ad48a21492842087);
+      ghash_next(128'hcea7403d4d606b6e074ec5d3baf39d18);
+      ghash_next(128'h00000000000000000000000000000080);
+      check_output(128'h83de425c5edc5d498f382c441041ca92);
 
       $display("*** Testcases for gcm_ghash completed.");
     end

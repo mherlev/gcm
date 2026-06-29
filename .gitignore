@@ -9,6 +9,9 @@
 test*
 *.sim
 
+## Un-ignore C source files that start with "test"
+!src/model/test_nettle_ghash_ref.c
+
 ## Log files
 *.log
 
