@@ -763,13 +763,9 @@ module tb_gcm();
   //----------------------------------------------------------------
   // gcm_tests()
   //
-  // Test vectors from NIST SP 800-38D, Appendix B.
+  // End-to-end NIST SP 800-38D test vectors exercised through the
+  // full register bus: init → next (encrypt) → done (tag).
   // https://csrc.nist.gov/publications/detail/sp/800-38d/final
-  //
-  // Note: ciphertext readback is not yet implemented in the register
-  // interface (gcm.v has no result registers). Tests currently verify
-  // that init and encrypt sequences complete without timeout. Output
-  // correctness checks should be added once result registers exist.
   //----------------------------------------------------------------
   task gcm_tests;
     begin : gcm_tests
@@ -783,6 +779,8 @@ module tb_gcm();
       reg [255 : 0] tc2_key;
       reg [127 : 0] tc2_nonce;
       reg [127 : 0] tc2_plaintext;
+      reg [127 : 0] tc2_result;
+      reg [127 : 0] tc2_tag;
 
       // NIST SP 800-38D Test Case 14 — AES-256-GCM, single block
       // K   : 0000000000000000000000000000000000000000000000000000000000000000
@@ -794,56 +792,90 @@ module tb_gcm();
       reg [255 : 0] tc14_key;
       reg [127 : 0] tc14_nonce;
       reg [127 : 0] tc14_plaintext;
+      reg [127 : 0] tc14_result;
+      reg [127 : 0] tc14_tag;
 
       $display("*** Testcases for gcm functionality started.");
 
-      // -- TC2: AES-128-GCM --
-      tc_ctr = tc_ctr + 1;
-      $display("TC%02d: NIST SP 800-38D Test Case 2 (AES-128-GCM, single block)", tc_ctr);
+      reset_dut();
 
+      // -- TC2: AES-128-GCM — ciphertext --
+      tc_ctr        = tc_ctr + 1;
       tc2_key       = 256'h0;
-      tc2_nonce     = 128'h00000000000000000000000000000001; // IV=0 padded with counter=1
+      tc2_nonce     = 128'h00000000000000000000000000000001;
       tc2_plaintext = 128'h0;
 
+      $display("TC%02d: NIST TC2 AES-128-GCM ciphertext = 0388dace60b6a392f328c2b971b2fe78", tc_ctr);
       gcm_init(tc2_key, 1'b0, tc2_nonce);
       gcm_encrypt_block(tc2_plaintext);
 
-      read_word(ADDR_STATUS);
-      if (read_data[STATUS_VALID_BIT] || read_data[STATUS_READY_BIT])
-        $display("TC%02d PASSED: init and encrypt completed.", tc_ctr);
-      else
-        begin
-          $display("TC%02d FAILED: DUT not ready/valid after encrypt.", tc_ctr);
-          error_ctr = error_ctr + 1;
-        end
+      read_word(ADDR_RESULT0); tc2_result[127 : 96] = read_data;
+      read_word(ADDR_RESULT1); tc2_result[ 95 : 64] = read_data;
+      read_word(ADDR_RESULT2); tc2_result[ 63 : 32] = read_data;
+      read_word(ADDR_RESULT3); tc2_result[ 31 :  0] = read_data;
 
-      // Expected ciphertext (not yet verifiable via register interface):
-      // C   = 0388dace60b6a392f328c2b971b2fe78
-      // Tag = ab6e47d42cec13bdf53a67b21257bddf
+      if (tc2_result !== 128'h0388dace60b6a392f328c2b971b2fe78) begin
+        $display("TC%02d FAILED: expected 0388dace60b6a392f328c2b971b2fe78, got %h",
+                 tc_ctr, tc2_result);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: ciphertext = %h", tc_ctr, tc2_result);
 
-      // -- TC14: AES-256-GCM --
+      // -- TC2: AES-128-GCM — tag --
       tc_ctr = tc_ctr + 1;
-      $display("TC%02d: NIST SP 800-38D Test Case 14 (AES-256-GCM, single block)", tc_ctr);
+      $display("TC%02d: NIST TC2 AES-128-GCM tag = ab6e47d42cec13bdf53a67b21257bddf", tc_ctr);
+      gcm_done();
 
+      read_word(ADDR_TAG0); tc2_tag[127 : 96] = read_data;
+      read_word(ADDR_TAG1); tc2_tag[ 95 : 64] = read_data;
+      read_word(ADDR_TAG2); tc2_tag[ 63 : 32] = read_data;
+      read_word(ADDR_TAG3); tc2_tag[ 31 :  0] = read_data;
+
+      if (tc2_tag !== 128'hab6e47d42cec13bdf53a67b21257bddf) begin
+        $display("TC%02d FAILED: expected ab6e47d42cec13bdf53a67b21257bddf, got %h",
+                 tc_ctr, tc2_tag);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: tag = %h", tc_ctr, tc2_tag);
+
+      // -- TC14: AES-256-GCM — ciphertext --
+      tc_ctr         = tc_ctr + 1;
       tc14_key       = 256'h0;
-      tc14_nonce     = 128'h00000000000000000000000000000001; // IV=0 padded with counter=1
+      tc14_nonce     = 128'h00000000000000000000000000000001;
       tc14_plaintext = 128'h0;
 
+      $display("TC%02d: NIST TC14 AES-256-GCM ciphertext = cea7403d4d606b6e074ec5d3baf39d18", tc_ctr);
       gcm_init(tc14_key, 1'b1, tc14_nonce);
       gcm_encrypt_block(tc14_plaintext);
 
-      read_word(ADDR_STATUS);
-      if (read_data[STATUS_VALID_BIT] || read_data[STATUS_READY_BIT])
-        $display("TC%02d PASSED: init and encrypt completed.", tc_ctr);
-      else
-        begin
-          $display("TC%02d FAILED: DUT not ready/valid after encrypt.", tc_ctr);
-          error_ctr = error_ctr + 1;
-        end
+      read_word(ADDR_RESULT0); tc14_result[127 : 96] = read_data;
+      read_word(ADDR_RESULT1); tc14_result[ 95 : 64] = read_data;
+      read_word(ADDR_RESULT2); tc14_result[ 63 : 32] = read_data;
+      read_word(ADDR_RESULT3); tc14_result[ 31 :  0] = read_data;
 
-      // Expected ciphertext (not yet verifiable via register interface):
-      // C   = cea7403d4d606b6e074ec5d3baf39d18
-      // Tag = d0d1c8a799996bf0265b98b5d48ab919
+      if (tc14_result !== 128'hcea7403d4d606b6e074ec5d3baf39d18) begin
+        $display("TC%02d FAILED: expected cea7403d4d606b6e074ec5d3baf39d18, got %h",
+                 tc_ctr, tc14_result);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: ciphertext = %h", tc_ctr, tc14_result);
+
+      // -- TC14: AES-256-GCM — tag --
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: NIST TC14 AES-256-GCM tag = d0d1c8a799996bf0265b98b5d48ab919", tc_ctr);
+      gcm_done();
+
+      read_word(ADDR_TAG0); tc14_tag[127 : 96] = read_data;
+      read_word(ADDR_TAG1); tc14_tag[ 95 : 64] = read_data;
+      read_word(ADDR_TAG2); tc14_tag[ 63 : 32] = read_data;
+      read_word(ADDR_TAG3); tc14_tag[ 31 :  0] = read_data;
+
+      if (tc14_tag !== 128'hd0d1c8a799996bf0265b98b5d48ab919) begin
+        $display("TC%02d FAILED: expected d0d1c8a799996bf0265b98b5d48ab919, got %h",
+                 tc_ctr, tc14_tag);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: tag = %h", tc_ctr, tc14_tag);
 
       $display("*** Testcases for gcm functionality completed.");
     end
