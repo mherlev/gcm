@@ -1,30 +1,36 @@
 GCM
 ===
 Galois Counter Mode block cipher mode for AES as specified in NIST SP
-800-38D (GCM) [1] and compatible with RFC5288 - AES Galois Counter Mode
-(GCM) Cipher Suites for TLS [2].
+800-38D [1], compatible with RFC 5288 [2].
 
 
 ## Introduction ##
 
-This implementation supports 128 and 256 bit keys and 64, 96
-or 128 bit TAG/ICV.
-
+This implementation supports 128-bit and 256-bit AES keys and produces
+a 128-bit authentication tag.
 
 
 ## Status ##
 
-Not completed. Does not yet work.
-The GHASH module (gcm_mult.v) is far from being completed.
+Functional. Verified against NIST SP 800-38D Appendix B test vectors.
 
-The top level is getting close to done with the functionality needed to
-use the core. The core itself contains an AES instance and is getting
-the first parts of the datapath and control path.
+Implemented and passing:
 
-There is a testbench for the top level to at least allow us to build
-from the top level. The build system also supports linting.
+- AES-128-GCM and AES-256-GCM encryption (NIST TC2 and TC14)
+- Authentication tag generation (GHASH finalisation + E(K, J0) XOR)
+- GHASH accumulator (`gcm_ghash.v`) with full GF(2^128) multiply
+- Register bus interface for key, nonce, plaintext, ciphertext, and tag
+- Nix flake build: simulation targets, lint check, and C reference model
 
-For more info, see the git log.
+The C reference model (`src/model/nettle_ghash_ref.c`, extracted from
+GNU Nettle) independently cross-checks the GHASH multiplication path.
+
+NIST test vectors verified end-to-end:
+
+| Test Case    | Key     | Ciphertext         | Tag                |
+|--------------|---------|--------------------|--------------------|
+| TC2 (AES-128)  | `0^128` | `0388dace...fe78`  | `ab6e47d4...bddf`  |
+| TC14 (AES-256) | `0^256` | `cea7403d...9d18`  | `d0d1c8a7...b919`  |
 
 
 ## Implementation results ##
