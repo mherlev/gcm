@@ -316,14 +316,33 @@ module tb_gcm();
   // gcm_init()
   //
   // Load key and nonce, trigger key expansion, wait for ready.
+  // Uses two-phase polling: wait for ready to deassert (init has
+  // started) then reassert (init complete).  This avoids the
+  // one-cycle propagation delay through gcm.v that causes a stale
+  // ready=1 read when called immediately after a prior operation.
   //----------------------------------------------------------------
   task gcm_init(input [255 : 0] key, input keylen, input [127 : 0] nonce);
+    reg [31 : 0] wait_ctr;
     begin
       write_key(key);
       write_nonce(nonce);
       write_word(ADDR_CONFIG, {6'h0, 2'h3, 5'h0, keylen, 1'b1}); // taglen=128, keylen, encdec=encrypt
       write_word(ADDR_CTRL, 32'h1);
-      wait_ready();
+      wait_ctr = 0;
+      read_data = ~0;
+      while (read_data[STATUS_READY_BIT] && wait_ctr < TIMEOUT_CYCLES)
+        begin
+          read_word(ADDR_STATUS);
+          wait_ctr = wait_ctr + 1;
+        end
+      wait_ctr = 0;
+      while (!read_data[STATUS_READY_BIT] && wait_ctr < TIMEOUT_CYCLES)
+        begin
+          read_word(ADDR_STATUS);
+          wait_ctr = wait_ctr + 1;
+        end
+      if (wait_ctr == TIMEOUT_CYCLES)
+        $display("TIMEOUT: gcm_init did not complete within %0d cycles.", TIMEOUT_CYCLES);
     end
   endtask // gcm_init
 
