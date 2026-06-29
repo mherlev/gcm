@@ -72,6 +72,10 @@ module gcm_core(
   localparam CTRL_NEXT_AES    = 4'h6; // assert aes_next with counter block
   localparam CTRL_WAIT_AES    = 4'h7; // wait for AES result, start GHASH
   localparam CTRL_WAIT_GHASH  = 4'h8; // wait for GHASH, assert valid
+  localparam CTRL_DONE_LEN    = 4'h9; // drive ghash_next with length block
+  localparam CTRL_DONE_GHASH  = 4'ha; // wait for GHASH after length block
+  localparam CTRL_DONE_AES    = 4'hb; // drive aes_next with J0 to compute E(K,J0)
+  localparam CTRL_DONE_WAIT   = 4'hc; // wait for AES, XOR with GHASH output → tag
 
 
   //----------------------------------------------------------------
@@ -84,6 +88,18 @@ module gcm_core(
   reg [127 : 0] h_reg;
   reg [127 : 0] h_new;
   reg           h_we;
+
+  reg [127 : 0] j0_reg;   // original nonce (J0) for E(K, J0) tag finalisation
+  reg [127 : 0] j0_new;
+  reg           j0_we;
+
+  reg [63 : 0]  len_c_reg; // ciphertext length in bits (+=128 per block)
+  reg [63 : 0]  len_c_new;
+  reg           len_c_we;
+
+  reg [127 : 0] tag_reg;  // computed authentication tag
+  reg [127 : 0] tag_new;
+  reg           tag_we;
 
   reg [127 : 0] block_out_reg;
   reg [127 : 0] block_out_new;
@@ -132,7 +148,7 @@ module gcm_core(
   assign valid       = valid_reg;
   assign tag_correct = 1'b0;
   assign block_out   = block_out_reg;
-  assign tag_out     = 128'h0;
+  assign tag_out     = tag_reg;
 
 
   //----------------------------------------------------------------
@@ -177,12 +193,15 @@ module gcm_core(
     begin : reg_update
       if (!reset_n)
         begin
-          ctr_reg      <= 128'h0;
-          h_reg        <= 128'h0;
+          ctr_reg       <= 128'h0;
+          h_reg         <= 128'h0;
+          j0_reg        <= 128'h0;
+          len_c_reg     <= 64'h0;
+          tag_reg       <= 128'h0;
           block_out_reg <= 128'h0;
-          ready_reg    <= 1'h0;
-          valid_reg    <= 1'h0;
-          gcm_ctrl_reg <= CTRL_IDLE;
+          ready_reg     <= 1'h0;
+          valid_reg     <= 1'h0;
+          gcm_ctrl_reg  <= CTRL_IDLE;
         end
       else
         begin
@@ -191,6 +210,15 @@ module gcm_core(
 
           if (h_we)
             h_reg <= h_new;
+
+          if (j0_we)
+            j0_reg <= j0_new;
+
+          if (len_c_we)
+            len_c_reg <= len_c_new;
+
+          if (tag_we)
+            tag_reg <= tag_new;
 
           if (block_out_we)
             block_out_reg <= block_out_new;
@@ -255,6 +283,12 @@ module gcm_core(
       ghash_x       = 128'h0;
       h_new         = 128'h0;
       h_we          = 1'h0;
+      j0_new        = 128'h0;
+      j0_we         = 1'h0;
+      len_c_new     = 64'h0;
+      len_c_we      = 1'h0;
+      tag_new       = 128'h0;
+      tag_we        = 1'h0;
       block_out_new = 128'h0;
       block_out_we  = 1'h0;
       ready_new     = 1'h0;
@@ -284,6 +318,15 @@ module gcm_core(
                 ready_new    = 1'h0;
                 ready_we     = 1'h1;
                 gcm_ctrl_new = CTRL_NEXT_AES;
+                gcm_ctrl_we  = 1'h1;
+              end
+            if (done)
+              begin
+                valid_new    = 1'h0;
+                valid_we     = 1'h1;
+                ready_new    = 1'h0;
+                ready_we     = 1'h1;
+                gcm_ctrl_new = CTRL_DONE_LEN;
                 gcm_ctrl_we  = 1'h1;
               end
           end
@@ -339,6 +382,10 @@ module gcm_core(
             ghash_init   = 1'h1;
             ghash_h0     = h_reg;
             ctr_init     = 1'h1; // load nonce into ctr_reg so first next increments to J0+1
+            j0_new       = nonce; // save J0 for E(K,J0) tag computation
+            j0_we        = 1'h1;
+            len_c_new    = 64'h0; // reset ciphertext length counter
+            len_c_we     = 1'h1;
             ready_new    = 1'h1;
             ready_we     = 1'h1;
             gcm_ctrl_new = CTRL_IDLE;
@@ -376,6 +423,8 @@ module gcm_core(
           begin
             if (ghash_ready)
               begin
+                len_c_new    = len_c_reg + 64'd128; // count ciphertext bits
+                len_c_we     = 1'h1;
                 valid_new    = 1'h1;
                 valid_we     = 1'h1;
                 ready_new    = 1'h1;
@@ -386,6 +435,58 @@ module gcm_core(
             else
               begin
                 gcm_ctrl_new = CTRL_WAIT_GHASH;
+                gcm_ctrl_we  = 1'h1;
+              end
+          end
+
+        CTRL_DONE_LEN:
+          begin
+            // Feed len(A)||len(C) block to GHASH: {0, len_c_reg} where len_c is in bits
+            ghash_next   = 1'h1;
+            ghash_x      = {64'h0, len_c_reg};
+            gcm_ctrl_new = CTRL_DONE_GHASH;
+            gcm_ctrl_we  = 1'h1;
+          end
+
+        CTRL_DONE_GHASH:
+          begin
+            if (ghash_ready)
+              begin
+                gcm_ctrl_new = CTRL_DONE_AES;
+                gcm_ctrl_we  = 1'h1;
+              end
+            else
+              begin
+                gcm_ctrl_new = CTRL_DONE_GHASH;
+                gcm_ctrl_we  = 1'h1;
+              end
+          end
+
+        CTRL_DONE_AES:
+          begin
+            aes_next     = 1'h1;
+            aes_block    = j0_reg; // encrypt J0 to get E(K, J0)
+            gcm_ctrl_new = CTRL_DONE_WAIT;
+            gcm_ctrl_we  = 1'h1;
+          end
+
+        CTRL_DONE_WAIT:
+          begin
+            aes_block = j0_reg; // hold for encipher CTRL_INIT cycle (same fix as CTRL_WAIT_AES)
+            if (aes_ready)
+              begin
+                tag_new      = ghash_y ^ aes_result; // tag = S XOR E(K, J0)
+                tag_we       = 1'h1;
+                valid_new    = 1'h1;
+                valid_we     = 1'h1;
+                ready_new    = 1'h1;
+                ready_we     = 1'h1;
+                gcm_ctrl_new = CTRL_IDLE;
+                gcm_ctrl_we  = 1'h1;
+              end
+            else
+              begin
+                gcm_ctrl_new = CTRL_DONE_WAIT;
                 gcm_ctrl_we  = 1'h1;
               end
           end

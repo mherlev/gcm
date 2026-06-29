@@ -60,6 +60,7 @@ module tb_gcm();
   parameter ADDR_CTRL        = 8'h08;
   parameter CTRL_INIT_VALUE  = 8'h01;
   parameter CTRL_NEXT_VALUE  = 8'h02;
+  parameter CTRL_DONE_VALUE  = 8'h04;
 
   parameter ADDR_STATUS      = 8'h09;
   parameter STATUS_READY_BIT = 0;
@@ -348,6 +349,36 @@ module tb_gcm();
         $display("TIMEOUT: DUT did not assert valid within %0d cycles.", TIMEOUT_CYCLES);
     end
   endtask // gcm_encrypt_block
+
+
+  //----------------------------------------------------------------
+  // gcm_done()
+  //
+  // Assert the done command to finalise the authentication tag.
+  // Waits for valid to first deassert (done started) then reassert
+  // (tag computation complete).
+  //----------------------------------------------------------------
+  task gcm_done;
+    reg [31 : 0] wait_ctr;
+    begin
+      write_word(ADDR_CTRL, CTRL_DONE_VALUE);
+      wait_ctr = 0;
+      read_data = ~0;
+      while (read_data[STATUS_VALID_BIT] && wait_ctr < TIMEOUT_CYCLES)
+        begin
+          read_word(ADDR_STATUS);
+          wait_ctr = wait_ctr + 1;
+        end
+      wait_ctr = 0;
+      while (!read_data[STATUS_VALID_BIT] && wait_ctr < TIMEOUT_CYCLES)
+        begin
+          read_word(ADDR_STATUS);
+          wait_ctr = wait_ctr + 1;
+        end
+      if (wait_ctr == TIMEOUT_CYCLES)
+        $display("TIMEOUT: DUT did not complete tag generation within %0d cycles.", TIMEOUT_CYCLES);
+    end
+  endtask // gcm_done
 
 
   //----------------------------------------------------------------
@@ -688,6 +719,48 @@ module tb_gcm();
 
 
   //----------------------------------------------------------------
+  // gcm_tag_tests()
+  //
+  // Verify authentication tag generation via the done command.
+  //
+  // TC_TG01: NIST SP 800-38D TC2 tag correct after init+next+done.
+  //          K=0, IV=0 (J0=0x01), P=0 → Tag=ab6e47d42cec13bdf53a67b21257bddf
+  //          Referencing dut.core.tag_reg causes a compile error until
+  //          the register is declared in gcm_core.v — TDD red step.
+  //----------------------------------------------------------------
+  task gcm_tag_tests;
+    reg [127 : 0] tag;
+    begin
+      $display("*** GCM tag generation tests started.");
+
+      reset_dut();
+
+      tc_ctr = tc_ctr + 1;
+      $display("TC%02d: NIST TC2 authentication tag (K=0, IV=0, P=0)", tc_ctr);
+
+      gcm_init(256'h0, 1'b0, 128'h00000000000000000000000000000001);
+      gcm_encrypt_block(128'h0);
+      gcm_done();
+
+      read_word(ADDR_TAG0); tag[127 : 96] = read_data;
+      read_word(ADDR_TAG1); tag[ 95 : 64] = read_data;
+      read_word(ADDR_TAG2); tag[ 63 : 32] = read_data;
+      read_word(ADDR_TAG3); tag[ 31 :  0] = read_data;
+
+      if (tag !== 128'hab6e47d42cec13bdf53a67b21257bddf) begin
+        $display("TC%02d FAILED:", tc_ctr);
+        $display("  expected: ab6e47d42cec13bdf53a67b21257bddf");
+        $display("  got:      %h  (core tag_reg=%h)", tag, dut.core.tag_reg);
+        error_ctr = error_ctr + 1;
+      end else
+        $display("TC%02d PASSED: tag = %h", tc_ctr, tag);
+
+      $display("*** GCM tag generation tests completed.");
+    end
+  endtask // gcm_tag_tests
+
+
+  //----------------------------------------------------------------
   // gcm_tests()
   //
   // Test vectors from NIST SP 800-38D, Appendix B.
@@ -793,6 +866,7 @@ module tb_gcm();
       result_readback_tests();
       gcm_core_init_tests();
       gcm_core_next_tests();
+      gcm_tag_tests();
       gcm_tests();
 
       display_test_result();
